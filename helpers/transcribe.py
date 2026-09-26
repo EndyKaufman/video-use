@@ -1,16 +1,26 @@
-"""Transcribe a video with ElevenLabs Scribe.
+"""Transcribe a video: word-level timestamps, speaker tags, cut-ready JSON.
 
-Extracts mono 16kHz audio via ffmpeg, uploads to Scribe with verbatim +
-diarize + audio events + word-level timestamps, writes the full response
-to <edit_dir>/transcripts/<video_stem>.json.
+Two backends behind one CLI:
 
-Cached: if the output file already exists, the upload is skipped.
+  * `whisper` (default here) — local faster-whisper via `whisper_backend.py`. No key,
+    no quota, offline. No diarization and no (laughter)/(applause) tags; see that
+    file's docstring for the full tradeoff list.
+  * `scribe` — hosted ElevenLabs Scribe. Needs ELEVENLABS_API_KEY in .env or the
+    environment. Keeps fillers, audio events and speaker labels; costs money and
+    uploads the audio.
+
+Both extract mono 16kHz audio via ffmpeg and write the identical schema to
+<edit_dir>/transcripts/<video_stem>.json.
+
+Cached: if the output file already exists, transcription is skipped.
 
 Usage:
     python helpers/transcribe.py <video_path>
     python helpers/transcribe.py <video_path> --edit-dir /custom/edit
     python helpers/transcribe.py <video_path> --language en
     python helpers/transcribe.py <video_path> --num-speakers 2
+    python helpers/transcribe.py <video_path> --asr scribe
+    python helpers/transcribe.py <video_path> --model large-v3 --device cuda
 """
 
 from __future__ import annotations
@@ -33,7 +43,17 @@ import requests
 SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 
 
-def load_api_key() -> str:
+def resolve_backend(requested: str | None = None) -> str:
+    """'whisper' (local) or 'scribe' (hosted). Local is the default on this machine."""
+    b = (requested or os.environ.get("VIDEO_USE_ASR") or "").strip().lower()
+    if b in ("whisper", "scribe"):
+        return b
+    if b:
+        sys.exit(f"unknown --asr {b!r}; use 'whisper' or 'scribe'")
+    return "whisper"
+
+
+def load_api_key(required: bool = True) -> str | None:
     for candidate in [Path(__file__).resolve().parent.parent / ".env", Path(".env")]:
         if candidate.exists():
             for line in candidate.read_text().splitlines():
@@ -45,7 +65,9 @@ def load_api_key() -> str:
                     return v.strip().strip('"').strip("'")
     v = os.environ.get("ELEVENLABS_API_KEY", "")
     if not v:
-        sys.exit("ELEVENLABS_API_KEY not found in .env or environment")
+        if required:
+            sys.exit("ELEVENLABS_API_KEY not found in .env or environment")
+        return None
     return v
 
 
@@ -128,11 +150,15 @@ def transcript_path(edit_dir: Path, video: Path, audio_track: int = 0) -> Path:
 def transcribe_one(
     video: Path,
     edit_dir: Path,
-    api_key: str,
+    api_key: str | None = None,
     language: str | None = None,
     num_speakers: int | None = None,
     verbose: bool = True,
     audio_track: int = 0,
+    asr: str | None = None,
+    model: str | None = None,
+    device: str | None = None,
+    compute: str | None = None,
 ) -> Path:
     """Transcribe a single video. Returns path to transcript JSON.
 
@@ -147,6 +173,10 @@ def transcribe_one(
             print(f"cached: {out_path.name}")
         return out_path
 
+    backend = resolve_backend(asr)
+    if backend == "scribe" and not api_key:
+        sys.exit("ELEVENLABS_API_KEY not found — required for --asr scribe")
+
     if verbose:
         print(f"  extracting audio from {video.name}", flush=True)
 
@@ -160,22 +190,32 @@ def transcribe_one(
         audio = Path(tmp) / f"{video.stem}.wav"
         extract_audio(video, audio, audio_track)
 
-        # Uploading silence costs the same as uploading speech and returns
-        # nothing, so catch the wrong-track case before paying for it.
+        # A silent track costs the same either way and returns nothing, so catch the
+        # wrong-track case before paying for it.
         peak = peak_dbfs(audio)
         if peak < -60.0:
             raise RuntimeError(
                 f"track {audio_track + 1} of {video.name} is silent "
-                f"(peak {peak:.1f} dBFS) - not uploading. "
+                f"(peak {peak:.1f} dBFS) - not transcribing. "
                 + (f"The file has {n_tracks} audio tracks; try --audio-track "
                    + " or ".join(str(i) for i in range(n_tracks) if i != audio_track) + "."
                    if n_tracks > 1 else "Check the source audio.")
             )
 
         size_mb = audio.stat().st_size / (1024 * 1024)
-        if verbose:
-            print(f"  uploading {video.stem}.wav ({size_mb:.1f} MB)", flush=True)
-        payload = call_scribe(audio, api_key, language, num_speakers)
+
+        if backend == "scribe":
+            if verbose:
+                print(f"  uploading {video.stem}.wav ({size_mb:.1f} MB) to Scribe", flush=True)
+            payload = call_scribe(audio, api_key, language, num_speakers)
+        else:
+            if num_speakers and verbose:
+                print(f"  note: --num-speakers {num_speakers} ignored — local whisper has no diarizer", flush=True)
+            if verbose:
+                print(f"  transcribing {video.stem}.wav ({size_mb:.1f} MB) locally with whisper", flush=True)
+            from whisper_backend import run_whisper
+
+            payload = run_whisper(audio, language, model, device, compute)
 
     out_path.write_text(json.dumps(payload, indent=2))
     dt = time.time() - t0
@@ -190,7 +230,7 @@ def transcribe_one(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Transcribe a video with ElevenLabs Scribe")
+    ap = argparse.ArgumentParser(description="Transcribe a video (local whisper, or hosted ElevenLabs Scribe)")
     ap.add_argument("video", type=Path, help="Path to video file")
     ap.add_argument(
         "--edit-dir",
@@ -217,6 +257,32 @@ def main() -> None:
         help="Zero-based audio track to transcribe. OBS writes the game on track 0 "
              "and the mic on track 1; without this ffmpeg applies its default audio "
              "stream selection, which picks the track with the most channels.",
+    )
+    ap.add_argument(
+        "--asr",
+        choices=("whisper", "scribe"),
+        default=None,
+        help="ASR backend. Defaults to local whisper; override with VIDEO_USE_ASR=scribe.",
+    )
+    ap.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Whisper model: tiny|base|small|medium|large-v3|distil-large-v3 "
+             "(default: $VIDEO_USE_WHISPER_MODEL or 'small').",
+    )
+    ap.add_argument(
+        "--device",
+        choices=("cpu", "cuda", "auto"),
+        default=None,
+        help="Whisper device (default: auto — cuda when a GPU works, else cpu).",
+    )
+    ap.add_argument(
+        "--compute-type",
+        dest="compute",
+        type=str,
+        default=None,
+        help="Whisper compute type: float16 (gpu) | int8 (cpu) | auto.",
     )
     args = ap.parse_args()
 

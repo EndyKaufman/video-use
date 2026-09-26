@@ -20,7 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from transcribe import load_api_key, transcribe_one, transcript_path
+from transcribe import load_api_key, resolve_backend, transcribe_one, transcript_path
 
 
 VIDEO_EXTS = {".mp4", ".MP4", ".mov", ".MOV", ".mkv", ".MKV", ".avi", ".AVI", ".m4v"}
@@ -43,7 +43,10 @@ def main() -> None:
         default=None,
         help="Edit output directory (default: <videos_dir>/edit)",
     )
-    ap.add_argument("--workers", type=int, default=4, help="Parallel workers (default: 4)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="Parallel workers. Default: 4 for hosted Scribe (network bound), "
+                         "1 for local whisper (one model, compute bound — extra workers "
+                         "only oversubscribe cores and slow every file down).")
     ap.add_argument(
         "--language",
         type=str,
@@ -54,7 +57,7 @@ def main() -> None:
         "--num-speakers",
         type=int,
         default=None,
-        help="Optional number of speakers. Improves diarization when known.",
+        help="Optional number of speakers. Improves diarization when known (Scribe only).",
     )
     ap.add_argument(
         "--audio-track",
@@ -62,7 +65,38 @@ def main() -> None:
         default=0,
         help="Zero-based audio track to transcribe (OBS: 0 = game, 1 = mic).",
     )
+    ap.add_argument(
+        "--asr",
+        choices=("whisper", "scribe"),
+        default=None,
+        help="ASR backend (default: local whisper, or $VIDEO_USE_ASR).",
+    )
+    ap.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Whisper model name, e.g. small | large-v3 | distil-large-v3.",
+    )
+    ap.add_argument(
+        "--device",
+        choices=("cpu", "cuda", "auto"),
+        default=None,
+        help="Whisper device (default: auto).",
+    )
+    ap.add_argument(
+        "--compute-type",
+        dest="compute",
+        type=str,
+        default=None,
+        help="Whisper compute type: float16 | int8 | auto.",
+    )
     args = ap.parse_args()
+
+    backend = resolve_backend(args.asr)
+    workers = args.workers if args.workers is not None else (1 if backend == "whisper" else 4)
+    if backend == "whisper" and workers > 1:
+        print(f"note: whisper is compute-bound; {workers} workers will share one model "
+              f"and may be slower than 1. Set --workers 1 unless you have GPU headroom.")
 
     videos_dir = args.videos_dir.resolve()
     if not videos_dir.is_dir():
@@ -84,13 +118,13 @@ def main() -> None:
         print("nothing to do")
         return
 
-    api_key = load_api_key()
+    api_key = load_api_key(required=backend == "scribe")
 
-    print(f"transcribing {len(pending)} files with {args.workers} parallel workers")
+    print(f"transcribing {len(pending)} files with {workers} parallel workers ({backend} backend)")
     t0 = time.time()
 
     errors: list[tuple[Path, str]] = []
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
                 transcribe_one,
@@ -101,6 +135,10 @@ def main() -> None:
                 num_speakers=args.num_speakers,
                 verbose=False,
                 audio_track=args.audio_track,
+                asr=backend,
+                model=args.model,
+                device=args.device,
+                compute=args.compute,
             ): v
             for v in pending
         }
