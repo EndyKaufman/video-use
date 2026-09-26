@@ -10,4 +10,8 @@ if (-not $env:VIDEO_USE_WHISPER_MODEL_DIR) { $env:VIDEO_USE_WHISPER_MODEL_DIR = 
 if (-not $env:HF_HOME)                     { $env:HF_HOME = "$root\.model_cache\hf" }
 if (-not $env:VIDEO_USE_ASR)               { $env:VIDEO_USE_ASR = "whisper" }
 
+# A piped/redirected Python stdio on Windows falls back to the ANSI codepage
+# (cp1251 here) and the helpers' progress prints abort on the first em dash.
+if (-not $env:PYTHONUTF8)                  { $env:PYTHONUTF8 = "1" }
+
 Write-Host "video-use env: ffmpeg + venv on PATH, ASR=$($env:VIDEO_USE_ASR), models=$($env:VIDEO_USE_WHISPER_MODEL_DIR)"

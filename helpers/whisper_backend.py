@@ -16,9 +16,10 @@ Honest differences from hosted Scribe — read these before trusting a cut list:
     apart from text alone. `--num-speakers` is accepted and ignored.
   * **No audio events.** No `(laughter)` / `(applause)` / `(sigh)` tags. Those come
     from Scribe's tagger; whisper does not have one.
-  * **Fillers get normalized away.** Whisper tends to drop `umm`/`uh` rather than
-    transcribe them, so filler-cutting has to come from the silence gaps
-    (`find_silences` in timeline_view sees them fine) rather than from tokens.
+  * **Fillers are unreliable, not absent.** In the verified sample `small` emitted
+    `UMM.` as its own phrase, so filler-cutting can use tokens — but whisper
+    orthography varies (`uhm`/`um`/dropped), so cross-check the silence gap too
+    (`find_silences` in timeline_view sees them fine) and cut on the pause either way.
   * **Word timestamps drift more** — expect 50–200ms. Hard Rule 7 (pad every cut
     edge, 30–200ms) matters more here than with Scribe; lean toward the wider end.
 

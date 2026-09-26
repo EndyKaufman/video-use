@@ -19,6 +19,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import pyutf8  # noqa: F401  # forces UTF-8 stdio; see pyutf8.py
 
 from transcribe import load_api_key, resolve_backend, transcribe_one, transcript_path
 

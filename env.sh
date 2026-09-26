@@ -12,4 +12,8 @@ export VIDEO_USE_WHISPER_MODEL_DIR="${VIDEO_USE_WHISPER_MODEL_DIR:-$VIDEO_USE_RO
 export HF_HOME="${HF_HOME:-$VIDEO_USE_ROOT/.model_cache/hf}"
 export VIDEO_USE_ASR="${VIDEO_USE_ASR:-whisper}"
 
+# A piped/redirected Python stdio on Windows falls back to the ANSI codepage
+# (cp1251 here) and the helpers' progress prints abort on the first em dash.
+export PYTHONUTF8="${PYTHONUTF8:-1}"
+
 echo "video-use env: ffmpeg + venv on PATH, ASR=$VIDEO_USE_ASR, models=$VIDEO_USE_WHISPER_MODEL_DIR"

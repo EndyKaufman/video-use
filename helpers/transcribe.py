@@ -36,6 +36,7 @@ import tempfile
 import time
 import wave
 from pathlib import Path
+import pyutf8  # noqa: F401  # forces UTF-8 stdio; see pyutf8.py
 
 import requests
 
@@ -56,7 +57,7 @@ def resolve_backend(requested: str | None = None) -> str:
 def load_api_key(required: bool = True) -> str | None:
     for candidate in [Path(__file__).resolve().parent.parent / ".env", Path(".env")]:
         if candidate.exists():
-            for line in candidate.read_text().splitlines():
+            for line in candidate.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
                     continue
@@ -217,7 +218,7 @@ def transcribe_one(
 
             payload = run_whisper(audio, language, model, device, compute)
 
-    out_path.write_text(json.dumps(payload, indent=2))
+    out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     dt = time.time() - t0
 
     if verbose:
