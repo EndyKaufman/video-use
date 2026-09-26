@@ -292,7 +292,9 @@ def main() -> None:
         sys.exit(f"video not found: {video}")
 
     edit_dir = (args.edit_dir or (video.parent / "edit")).resolve()
-    api_key = load_api_key()
+    # The key is a scribe-only requirement. Loading it eagerly made the local
+    # whisper path die on a machine with no key, and dropped --asr/--model/--device.
+    api_key = load_api_key(required=(resolve_backend(args.asr) == "scribe"))
 
     transcribe_one(
         video=video,
@@ -301,6 +303,10 @@ def main() -> None:
         language=args.language,
         num_speakers=args.num_speakers,
         audio_track=args.audio_track,
+        asr=args.asr,
+        model=args.model,
+        device=args.device,
+        compute=args.compute,
     )
 
 
